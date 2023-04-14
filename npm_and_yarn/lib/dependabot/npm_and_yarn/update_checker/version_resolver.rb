@@ -95,6 +95,7 @@ module Dependabot
           return if part_of_tightly_locked_monorepo?
           return if types_update_available?
           return if original_package_update_available?
+          return if not_resolvable?
 
           return latest_allowable_version unless relevant_unmet_peer_dependencies.any?
 
@@ -102,6 +103,7 @@ module Dependabot
         end
 
         def latest_version_resolvable_with_full_unlock?
+          return false if not_resolvable?
           return false if dependency_updates_from_full_unlock.nil?
 
           true
@@ -302,26 +304,34 @@ module Dependabot
         end
 
         def peer_dependency_errors
-          return @peer_dependency_errors if @peer_dependency_errors_checked
-
-          @peer_dependency_errors_checked = true
-
-          @peer_dependency_errors =
-            fetch_peer_dependency_errors(version: latest_allowable_version)
+          resolution_errors.reject { |error| error == "NOT_RESOLVABLE" }
         end
 
         def old_peer_dependency_errors
-          return @old_peer_dependency_errors if @old_peer_dependency_errors_checked
+          old_resolution_errors.reject { |error| error == "NOT_RESOLVABLE" }
+        end
 
-          @old_peer_dependency_errors_checked = true
+        def resolution_errors
+          return @resolution_errors if @resolution_errors_checked
+
+          @resolution_errors_checked = true
+
+          @resolution_errors =
+            fetch_resolution_errors(version: latest_allowable_version)
+        end
+
+        def old_resolution_errors
+          return @old_resolution_errors if @old_resolution_errors_checked
+
+          @old_resolution_errors_checked = true
 
           version = version_for_dependency(dependency)
 
-          @old_peer_dependency_errors =
-            fetch_peer_dependency_errors(version: version)
+          @old_resolution_errors =
+            fetch_resolution_errors(version: version)
         end
 
-        def fetch_peer_dependency_errors(version:)
+        def fetch_resolution_errors(version:)
           # TODO: Add all of the error handling that the FileUpdater does
           # here (since problematic repos will be resolved here before they're
           # seen by the FileUpdater)
@@ -340,7 +350,11 @@ module Dependabot
           []
         end
 
-        def handle_peer_dependency_errors(message)
+        def not_resolvable?
+          resolution_errors.include?("NOT_RESOLVABLE")
+        end
+
+        def handle_resolution_errors(message)
           errors = []
           if message.match?(NPM6_PEER_DEP_ERROR_REGEX)
             message.scan(NPM6_PEER_DEP_ERROR_REGEX) do
@@ -364,6 +378,8 @@ module Dependabot
               captures["requiring_dep"].tr!(" ", "@")
               errors << captures
             end
+          elsif message.match?("ERR_PNPM_NO_MATCHING_VERSION")
+            errors << "NOT_RESOLVABLE"
           else
             raise
           end
@@ -514,7 +530,7 @@ module Dependabot
 
           run_npm_checker(path: path, version: version)
         rescue SharedHelpers::HelperSubprocessFailed => e
-          handle_peer_dependency_errors(e.message)
+          handle_resolution_errors(e.message)
         end
 
         def run_yarn_checker(path:, version:, lockfile:)
